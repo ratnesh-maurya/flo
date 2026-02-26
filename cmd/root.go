@@ -35,6 +35,10 @@ var rootCmd = &cobra.Command{
 	Use:     "flo",
 	Short:   "Search Stack Overflow from your terminal",
 	Version: version,
+	// When no subcommand is given, enter interactive REPL mode.
+	// runAsk is defined in ask.go (same package); with zero args it
+	// starts a REPL, with args it does a one-shot search.
+	RunE: runAsk,
 }
 
 // Execute runs the root command.

@@ -32,20 +32,15 @@ import (
 // ---------- JSON structs matching the MCP server response ----------
 
 // SOResponse is the top-level envelope returned by so_search / get_content.
+// The Stack Exchange API returns: {"items":[{...question/answer fields...}], "errors":[]}.
 type SOResponse struct {
-	Items  []SOItem `json:"Items"`
-	Errors []any    `json:"Errors"`
-}
-
-// SOItem represents a single search result (question, answer, etc.).
-type SOItem struct {
-	Site string       `json:"Site"`
-	Type string       `json:"Type"`
-	ID   string       `json:"Id"`
-	Data QuestionData `json:"Data"`
+	Items  []QuestionData `json:"items"`
+	Errors []any          `json:"errors"`
 }
 
 // QuestionData holds the rich payload for a question (and inline answers).
+// When an SOItem represents an answer (from get_content with SO_A<id>),
+// the answer-specific fields (AnswerID, IsAccepted) are populated instead.
 type QuestionData struct {
 	Tags             []string     `json:"tags"`
 	Owner            OwnerData    `json:"owner"`
@@ -61,6 +56,11 @@ type QuestionData struct {
 	Link             string       `json:"link"`
 	Title            string       `json:"title"`
 	Answers          []AnswerData `json:"answers"` // embedded in so_search results
+
+	// Answer-specific fields (populated when this item is an answer,
+	// e.g. from get_content "SO_A<id>").
+	AnswerID   int  `json:"answer_id"`
+	IsAccepted bool `json:"is_accepted"`
 }
 
 // AnswerData holds a single answer embedded inside a question's search result.
@@ -100,14 +100,10 @@ func BestQuestion(resp *SOResponse, tagHints []string) *QuestionData {
 		return nil
 	}
 
-	// Filter to questions only (skip if Type is populated and not "Question").
+	// Collect all items as question candidates.
 	var questions []*QuestionData
 	for i := range resp.Items {
-		item := &resp.Items[i]
-		if item.Type != "" && item.Type != "Question" {
-			continue
-		}
-		questions = append(questions, &item.Data)
+		questions = append(questions, &resp.Items[i])
 	}
 	if len(questions) == 0 {
 		return nil
@@ -279,7 +275,7 @@ func FormatSearchResults(resp *SOResponse, maxResults int) string {
 	}
 
 	for i := 0; i < shown; i++ {
-		q := resp.Items[i].Data
+		q := resp.Items[i]
 		title := decodeHTML(q.Title)
 		tags := ""
 		if len(q.Tags) > 0 {
@@ -295,6 +291,178 @@ func FormatSearchResults(resp *SOResponse, maxResults int) string {
 		}
 		b.WriteString(fmt.Sprintf("%d. **%s**%s  \n   Score: %d | Answers: %d%s  \n   %s\n\n",
 			i+1, title, accepted, q.Score, q.AnswerCount, tags, q.Link))
+	}
+
+	return b.String()
+}
+
+// ---------- Answer helpers for interactive mode ----------
+
+// BestQuestionWithAnswers returns the highest-scored question that has
+// at least one embedded answer, preferring questions whose tags match
+// the provided hints.  Returns nil if no question has answers.
+func BestQuestionWithAnswers(resp *SOResponse, tagHints []string) *QuestionData {
+	if resp == nil || len(resp.Items) == 0 {
+		return nil
+	}
+
+	var candidates []*QuestionData
+	for i := range resp.Items {
+		if len(resp.Items[i].Answers) == 0 {
+			continue
+		}
+		candidates = append(candidates, &resp.Items[i])
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	if len(tagHints) > 0 {
+		hintSet := make(map[string]bool, len(tagHints))
+		for _, h := range tagHints {
+			hintSet[strings.ToLower(h)] = true
+		}
+		var matching []*QuestionData
+		for _, q := range candidates {
+			for _, t := range q.Tags {
+				if hintSet[strings.ToLower(t)] {
+					matching = append(matching, q)
+					break
+				}
+			}
+		}
+		if len(matching) > 0 {
+			candidates = matching
+		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		return candidates[i].ViewCount > candidates[j].ViewCount
+	})
+
+	return candidates[0]
+}
+
+// AnswerFromItem converts a QuestionData (which may represent an answer
+// from a get_content response) into an AnswerData struct.
+func AnswerFromItem(item QuestionData) AnswerData {
+	return AnswerData{
+		Owner:            item.Owner,
+		IsAccepted:       item.IsAccepted,
+		AnswerID:         item.AnswerID,
+		Score:            item.Score,
+		BodyMarkdown:     item.BodyMarkdown,
+		Link:             item.Link,
+		Title:            item.Title,
+		LastActivityDate: item.LastActivityDate,
+	}
+}
+
+// SortAnswers returns a sorted copy: accepted answers first, then
+// by descending score.
+func SortAnswers(answers []AnswerData) []AnswerData {
+	sorted := make([]AnswerData, len(answers))
+	copy(sorted, answers)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].IsAccepted != sorted[j].IsAccepted {
+			return sorted[i].IsAccepted
+		}
+		return sorted[i].Score > sorted[j].Score
+	})
+	return sorted
+}
+
+// FormatAnswerPreview returns a short one-line summary of an answer,
+// suitable for display in a promptui selection list.
+func FormatAnswerPreview(a *AnswerData, index int) string {
+	badge := "  "
+	if a.IsAccepted {
+		badge = "✅"
+	}
+	name := decodeHTML(a.Owner.DisplayName)
+	if name == "" {
+		name = "Anonymous"
+	}
+	body := decodeHTML(a.BodyMarkdown)
+	body = strings.SplitN(body, "\n", 2)[0]
+	body = strings.TrimSpace(body)
+	if len(body) > 55 {
+		body = body[:52] + "..."
+	}
+	if a.Score > 0 {
+		return fmt.Sprintf("%s #%d [Score: %d] by %s — %s", badge, index+1, a.Score, name, body)
+	}
+	return fmt.Sprintf("%s #%d by %s — %s", badge, index+1, name, body)
+}
+
+// FormatSingleAnswer builds a Markdown document for one answer.
+func FormatSingleAnswer(a *AnswerData) string {
+	var b strings.Builder
+
+	header := "## Answer"
+	if a.IsAccepted {
+		header += "  ✅ Accepted"
+	}
+	name := decodeHTML(a.Owner.DisplayName)
+	if name == "" {
+		name = "Anonymous"
+	}
+	b.WriteString(fmt.Sprintf("%s  (Score: %d)\n\n", header, a.Score))
+	b.WriteString(fmt.Sprintf("By **%s**\n\n", name))
+	b.WriteString("---\n\n")
+	b.WriteString(decodeHTML(a.BodyMarkdown))
+	b.WriteString("\n")
+
+	return b.String()
+}
+
+// FormatQuestionHeader builds a Markdown summary of a question (title,
+// meta, tags, body) for display above the interactive answer list.
+func FormatQuestionHeader(q *QuestionData) string {
+	if q == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	title := decodeHTML(q.Title)
+	b.WriteString(fmt.Sprintf("# %s\n\n", title))
+
+	meta := fmt.Sprintf("Score: **%d**  |  Views: **%s**  |  Answers: **%d**",
+		q.Score, formatNumber(q.ViewCount), q.AnswerCount)
+	if q.IsAnswered {
+		meta += "  |  ✅ Answered"
+	}
+	b.WriteString(meta + "\n\n")
+
+	if len(q.Tags) > 0 {
+		var tagParts []string
+		for _, t := range q.Tags {
+			tagParts = append(tagParts, "`"+t+"`")
+		}
+		b.WriteString(strings.Join(tagParts, "  ") + "\n\n")
+	}
+
+	if q.Owner.DisplayName != "" {
+		dateStr := ""
+		if q.CreationDate > 0 {
+			dateStr = time.Unix(q.CreationDate, 0).Format("Jan 2, 2006")
+		}
+		b.WriteString(fmt.Sprintf("Asked by **%s**", decodeHTML(q.Owner.DisplayName)))
+		if dateStr != "" {
+			b.WriteString(fmt.Sprintf(" on %s", dateStr))
+		}
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("---\n\n")
+	body := decodeHTML(q.BodyMarkdown)
+	b.WriteString(body + "\n")
+
+	if q.Link != "" {
+		b.WriteString(fmt.Sprintf("\n🔗 %s\n", q.Link))
 	}
 
 	return b.String()

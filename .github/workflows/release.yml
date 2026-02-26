@@ -1,0 +1,44 @@
+# GitHub Actions workflow for flo releases.
+#
+# Trigger: Push any tag (e.g., v1.0.0, v1.2.3).
+# Steps:
+#   1. Checkout the code.
+#   2. Setup Go.
+#   3. Run GoReleaser to build cross-platform binaries, create a GitHub Release,
+#      and publish the Homebrew formula to ratnesh-maurya/homebrew-tap.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -29,18 +29,20 @@ builds:
 
 archives:
   - id: flo
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     # Use zip for Windows.
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: "checksums.txt"
 
 snapshot:
-  version_template: "{{ incpatch .Version }}-next"
+  tag_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
@@ -51,10 +53,10 @@ changelog:
       - "^ci:"
       - "^chore:"
 
-# Homebrew tap configuration.
-# On release, GoReleaser will create/update the formula at:
-#   ratnesh-maurya/homebrew-tap/Formula/flo.rb
-brews:
+# Homebrew cask configuration.
+# On release, GoReleaser will create/update the cask at:
+#   ratnesh-maurya/homebrew-tap/Casks/flo.rb
+homebrew_casks:
   - name: flo
     repository:
       owner: ratnesh-maurya
@@ -63,15 +65,11 @@ brews:
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    directory: Formula
     homepage: "https://github.com/ratnesh-maurya/flo"
     description: "Search Stack Overflow from your terminal using the MCP protocol"
     license: "MIT"
-    # Homebrew install block.
-    install: |
-      bin.install "flo"
-    test: |
-      system "#{bin}/flo", "--version"
-    dependencies:
-      - name: node
-        type: optional
+    binaries:
+      - flo
+    depends_on:
+      formula:
+        - node

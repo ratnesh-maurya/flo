@@ -42,7 +42,7 @@ checksum:
   name_template: "checksums.txt"
 
 snapshot:
-  tag_template: "{{ incpatch .Version }}-next"
+  name_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
@@ -70,6 +70,3 @@ homebrew_casks:
     license: "MIT"
     binaries:
       - flo
-    depends_on:
-      formula:
-        - node
